@@ -3,6 +3,8 @@
 #include "Menu.h"
 #include "OverlayFeature.h"
 #include "PerformanceOverlay/ABTesting/ABTestAggregator.h"
+#include "PerformanceOverlay/DrawCallRow.h"
+#include "PerformanceOverlay/CircularBuffer.h"
 #include "Utils/PerfUtils.h"
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -22,20 +24,6 @@ enum class SpecialShaderType
 
 // Constants for special draw call values
 static constexpr int kDrawCallsNotApplicable = -1;  // Special value to indicate draw calls are not applicable
-
-struct DrawCallRow
-{
-	std::string label;
-	int shaderType;  // Use int for consistency with the rest of the codebase
-	int drawCalls;
-	float frameTime;
-	float percent;
-	float costPerCall;
-	std::string tooltip;
-	bool enabled;
-	std::optional<float> testFrameTime;
-	std::optional<float> testCostPerCall;
-};
 
 struct ShaderRow
 {
@@ -78,41 +66,6 @@ struct ColumnConfig
 	std::function<void(const DrawCallRow&, int colIdx)> cellRender;
 	std::function<bool(const DrawCallRow&, const DrawCallRow&, bool)> sortFunc;
 	std::function<void()> headerTooltip;
-};
-
-template <typename T>
-class CircularBuffer
-{
-	std::vector<T> data = {};
-	size_t headIdx = 0;
-
-public:
-	CircularBuffer(size_t size)
-	{
-		size = std::max((size_t)1, size);
-		data.resize(size);
-	}
-	CircularBuffer() :
-		CircularBuffer(1) {}
-
-	void Resize(size_t newSize)
-	{
-		if (data.size() == newSize)
-			return;
-		data.resize(newSize);
-		if (headIdx >= newSize)
-			headIdx = 0;
-	}
-
-	void Push(const T& val)
-	{
-		data[headIdx++] = val;
-		if (headIdx >= data.size())
-			headIdx = 0;
-	}
-
-	std::span<const T> GetData() const { return { data }; }
-	size_t GetHeadIdx() const { return headIdx; }
 };
 
 struct PerformanceOverlay : OverlayFeature

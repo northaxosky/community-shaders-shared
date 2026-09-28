@@ -1,4 +1,5 @@
 #pragma once
+#include "../DrawCallRow.h"
 #include <chrono>
 #include <memory>
 #include <nlohmann/json.hpp>
