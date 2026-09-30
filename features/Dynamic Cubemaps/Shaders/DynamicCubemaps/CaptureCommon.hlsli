@@ -20,9 +20,15 @@ struct CaptureLightingState
 
 RWStructuredBuffer<CaptureLightingState> LightingState : register(u3);
 
+#if defined(DYNAMIC_CUBEMAPS_PREPARED_CAPTURE)
+Texture2DArray<float4> CapturePosition : register(t0);
+Texture2DArray<float4> CaptureColor : register(t1);
+Texture2DArray<float2> CaptureUV : register(t2);
+#else
 Texture2D<float> DepthTexture : register(t0);
 Texture2D<float4> ColorTexture : register(t1);
 SamplerState LinearSampler : register(s0);
+#endif
 
 cbuffer UpdateData : register(b0)
 {
@@ -31,6 +37,9 @@ cbuffer UpdateData : register(b0)
 	float CaptureDeltaTime;
 	uint ResetCapture;
 	uint2 UpdatePadding;
+#if defined(DYNAMIC_CUBEMAPS_PREPARED_CAPTURE)
+	float4 CaptureCameraOrigin;
+#endif
 }
 
 static const float CaptureHistoryLifetime = 30.0;
@@ -77,6 +86,19 @@ float3 GetSamplingVector(uint3 texel)
 
 bool SampleCapture(uint3 texel, out float3 position, out float3 color, out float2 uv)
 {
+#if defined(DYNAMIC_CUBEMAPS_PREPARED_CAPTURE)
+	float4 preparedPosition = CapturePosition.Load(int4(texel, 0));
+	float4 preparedColor = CaptureColor.Load(int4(texel, 0));
+	position = preparedPosition.xyz;
+	color = preparedColor.rgb;
+	uv = CaptureUV.Load(int4(texel, 0));
+	// Prepared position w is 0 for invalid, 1 for geometry, and 2 for sky.
+#	if defined(REFLECTIONS)
+	return preparedPosition.w > 0.0;
+#	else
+	return preparedPosition.w == 1.0;
+#	endif
+#else
 	position = 0.0;
 	color = 0.0;
 	float3 viewDirection = FrameBuffer::WorldToView(-GetSamplingVector(texel), false);
@@ -86,11 +108,11 @@ bool SampleCapture(uint3 texel, out float3 position, out float3 color, out float
 
 	float2 sampleUV = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv);
 	float depth = DepthTexture.SampleLevel(LinearSampler, sampleUV, 0);
-#if defined(REFLECTIONS)
+#	if defined(REFLECTIONS)
 	if (SharedData::GetScreenDepth(depth) <= 16.5)
-#else
+#	else
 	if (depth == 1.0 || SharedData::GetScreenDepth(depth) <= 16.5)
-#endif
+#	endif
 		return false;
 
 	float4 positionCS = mul(FrameBuffer::CameraViewProjInverse, float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), depth, 1.0));
@@ -100,11 +122,16 @@ bool SampleCapture(uint3 texel, out float3 position, out float3 color, out float
 		return false;
 	color = clamp(color, 0.0, 65504.0);
 	return true;
+#endif
 }
 
 float3 AdjustCapturePosition(float3 position)
 {
+#if defined(DYNAMIC_CUBEMAPS_PREPARED_CAPTURE)
+	return position + (CameraPreviousPosAdjust2 - CaptureCameraOrigin.xyz) * 0.001;
+#else
 	return position + (CameraPreviousPosAdjust2 - FrameBuffer::CameraPosAdjust.xyz) * 0.001;
+#endif
 }
 
 bool CaptureGeometryMatches(float3 previousPosition, float3 position)
