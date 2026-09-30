@@ -1,10 +1,15 @@
 #ifndef __FRAMEBUFFER_DEPENDENCY_HLSL__
 #define __FRAMEBUFFER_DEPENDENCY_HLSL__
 
+// Hosts whose engine already binds b12 relocate PerFrame by defining this.
+#ifndef FRAMEBUFFER_REGISTER
+#	define FRAMEBUFFER_REGISTER b12
+#endif
+
 namespace FrameBuffer
 {
 
-	cbuffer PerFrame : register(b12)
+	cbuffer PerFrame : register(FRAMEBUFFER_REGISTER)
 	{
 		row_major float4x4 CameraView : packoffset(c0);
 		row_major float4x4 CameraProj : packoffset(c4);
