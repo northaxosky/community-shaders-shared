@@ -120,7 +120,11 @@ public:
 	void EndFrame();
 
 	/** @brief Gets the per-pass timing results from the last collected frame. */
-	const std::vector<TimerResult>& GetResults() const { return results; }
+	const std::vector<TimerResult>& GetResults() const
+	{
+		UpdateResultStatistics();
+		return results;
+	}
 
 	/** @brief Gets the total GPU time in milliseconds for the last collected frame. */
 	float GetTotalTimeMs() const { return totalTimeMs; }
@@ -182,7 +186,9 @@ private:
 	PerfEventCallback beginPerfEvent;
 	PerfEventCallback endPerfEvent;
 
-	std::vector<TimerResult> results;
+	// Rolling statistics are derived on read; collection runs every frame, readers do not.
+	mutable std::vector<TimerResult> results;
+	mutable bool resultStatisticsStale = false;
 
 	struct KnownTimer
 	{
@@ -198,6 +204,9 @@ private:
 	float cpuTotalTimeMs = 0.0f;
 
 	void CollectResults();
+
+	/** @brief Fills the rolling average and percentiles of results from the known timer histories. */
+	void UpdateResultStatistics() const;
 
 	/** @brief Drops timers that have not been sampled for kTimerRetireFrames, so disabled passes stop reporting stale values. */
 	void RetireStaleTimers();

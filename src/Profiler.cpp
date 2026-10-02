@@ -19,16 +19,17 @@ float Profiler::RollingHistory::GetPercentile(float p) const
 		return lastMs;
 
 	thread_local std::vector<float> sorted;
-	sorted.resize(count);
-	for (uint32_t i = 0; i < count; i++)
-		sorted[i] = history[i];
-	std::sort(sorted.begin(), sorted.end());
+	sorted.assign(history, history + count);
 
 	float idx = (p / 100.0f) * static_cast<float>(count - 1);
 	uint32_t lo = static_cast<uint32_t>(idx);
 	uint32_t hi = std::min(lo + 1, count - 1);
 	float frac = idx - static_cast<float>(lo);
-	return sorted[lo] * (1.0f - frac) + sorted[hi] * frac;
+	// Selection instead of a full sort: this runs for every timer every frame.
+	std::nth_element(sorted.begin(), sorted.begin() + lo, sorted.end());
+	const float low = sorted[lo];
+	const float high = hi == lo ? low : *std::min_element(sorted.begin() + hi, sorted.end());
+	return low * (1.0f - frac) + high * frac;
 }
 
 void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context)
@@ -226,17 +227,31 @@ void Profiler::CollectResults()
 			result.gpuTimeMs = known.gpu.lastMs;
 			result.cpuTimeMs = known.cpu.lastMs;
 		}
+		result.valid = true;
+		result.historyBuffer = known.gpu.history;
+		result.historyHead = known.gpu.head;
+		result.historyCount = known.gpu.count;
+		results.push_back(std::move(result));
+	}
+	resultStatisticsStale = true;
+}
+
+void Profiler::UpdateResultStatistics() const
+{
+	if (!resultStatisticsStale)
+		return;
+	resultStatisticsStale = false;
+	for (auto& result : results) {
+		const auto index = knownTimerIndex.find(result.name);
+		if (index == knownTimerIndex.end())
+			continue;
+		const auto& known = knownTimers[index->second];
 		result.avgMs = known.gpu.GetAverage();
 		result.p95Ms = known.gpu.GetPercentile(95.0f);
 		result.p99Ms = known.gpu.GetPercentile(99.0f);
 		result.cpuAvgMs = known.cpu.GetAverage();
 		result.cpuP95Ms = known.cpu.GetPercentile(95.0f);
 		result.cpuP99Ms = known.cpu.GetPercentile(99.0f);
-		result.valid = true;
-		result.historyBuffer = known.gpu.history;
-		result.historyHead = known.gpu.head;
-		result.historyCount = known.gpu.count;
-		results.push_back(std::move(result));
 	}
 }
 void Profiler::RetireStaleTimers()
