@@ -134,10 +134,12 @@ namespace ImageBasedLighting
 		return linEnv + linSky;
 	}
 
-	/// Combined env + sky IBL color with a visibility factor applied to the sky term.
+	/// Diffuse IBL for a world-point sample (no surface normal), per DALCMode.
 	float3 GetIBLColorOccluded(float3 rayDir, float visibility)
 	{
-		return GetEnvIBLColor(rayDir) + GetSkyIBLColor(rayDir) * visibility;
+		// Env SH is not projected for DALC modes; rayDir is the negated normal
+		float3 vanillaDALC = Color::Ambient(max(0, SharedData::GetAmbient(-rayDir)));
+		return GetDiffuseIBLOccluded(vanillaDALC, rayDir, visibility);
 	}
 
 #if defined(LIGHTING)
