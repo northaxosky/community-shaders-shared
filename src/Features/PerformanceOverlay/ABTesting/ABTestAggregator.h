@@ -3,6 +3,7 @@
 #include <chrono>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <vector>
 
 // A/B Testing constants
@@ -140,6 +141,7 @@ public:
 private:
 	std::vector<ABInterval> intervals;
 	std::unique_ptr<ABInterval> currentInterval;
+	mutable std::optional<std::vector<AggregatedDrawCallStats>> cachedResults;
 
 	// Settings snapshots
 	nlohmann::json settingsA;
