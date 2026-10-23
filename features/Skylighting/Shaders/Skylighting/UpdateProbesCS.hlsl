@@ -2,16 +2,30 @@
 #include "Common/Math.hlsli"
 #include "Skylighting/Skylighting.hlsli"
 
+#ifndef SKYLIGHTING_SUN_CASCADES
+#	define SKYLIGHTING_SUN_CASCADES 2
+#endif
+
+#if SKYLIGHTING_SUN_CASCADES < 1 || SKYLIGHTING_SUN_CASCADES > 4
+#	error SKYLIGHTING_SUN_CASCADES must be 1 to 4
+#endif
+
+#if SKYLIGHTING_SUN_CASCADES == 2
+typedef float2 SplitDistances;
+#else
+typedef float4 SplitDistances;
+#endif
+
 Texture2D<unorm float> srcOcclusionDepth : register(t0);
 Texture2DArray<float4> ShadowCascadeMap : register(t1);
 Texture2DArray<float4> ESRAMShadow : register(t3);
 
 struct DirectionalShadowLightData
 {
-	column_major float4x4 ShadowProj[2];
-	column_major float4x4 InvShadowProj[2];
-	float2 EndSplitDistances;
-	float2 StartSplitDistances;
+	column_major float4x4 ShadowProj[SKYLIGHTING_SUN_CASCADES];
+	column_major float4x4 InvShadowProj[SKYLIGHTING_SUN_CASCADES];
+	SplitDistances EndSplitDistances;
+	SplitDistances StartSplitDistances;
 };
 StructuredBuffer<DirectionalShadowLightData> DirectionalShadowLights : register(t2);
 
@@ -118,19 +132,21 @@ static const float3 noise3D[32] = {
 			float linearDepth = SharedData::GetScreenDepth(ndcDepth);
 
 			if (ndcDepth > 0 && ndcDepth < 1 && linearDepth > 0) {
-				if (linearDepth >= shadowData.EndSplitDistances.y) {
+				if (linearDepth >= shadowData.EndSplitDistances[SKYLIGHTING_SUN_CASCADES - 1]) {
 					// Past the directional shadow range: fully lit
 					advanceShadowHistory = true;
 				} else {
 					float3 positionWS = jitteredMS + FrameBuffer::CameraPosAdjust.xyz;
 
-					uint cascadeIndex = (linearDepth > shadowData.EndSplitDistances.x) ? 1u : 0u;
+					uint cascadeIndex = 0;
+					[unroll] for (uint i = 0; i < SKYLIGHTING_SUN_CASCADES - 1; ++i)
+						cascadeIndex += (linearDepth > shadowData.EndSplitDistances[i]) ? 1u : 0u;
 					float3 positionLS = mul(shadowData.ShadowProj[cascadeIndex], float4(positionWS, 1)).xyz;
 					bool inCascade = all(positionLS.xy > 0) && all(positionLS.xy < 1) && positionLS.z > 0 && positionLS.z < 1;
-					// The jitter can leave cascade 0's footprint; cascade 1 covers a wider area, so try it next.
-					if (!inCascade && cascadeIndex == 0) {
-						cascadeIndex = 1;
-						positionLS = mul(shadowData.ShadowProj[1], float4(positionWS, 1)).xyz;
+					// Jitter can leave the footprint; the next, wider cascade may still cover it.
+					if (!inCascade && cascadeIndex + 1 < SKYLIGHTING_SUN_CASCADES) {
+						cascadeIndex++;
+						positionLS = mul(shadowData.ShadowProj[cascadeIndex], float4(positionWS, 1)).xyz;
 						inCascade = all(positionLS.xy > 0) && all(positionLS.xy < 1) && positionLS.z > 0 && positionLS.z < 1;
 					}
 
@@ -139,7 +155,7 @@ static const float3 noise3D[32] = {
 						float esramShadow = ESRAMShadow.SampleCmpLevelZero(comparisonSampler, float3(positionLS.xy, cascadeIndex), positionLS.z);
 						shadowSample = min(cascadeShadow, esramShadow);
 
-						float fade = saturate(linearDepth / shadowData.EndSplitDistances.y);
+						float fade = saturate(linearDepth / shadowData.EndSplitDistances[SKYLIGHTING_SUN_CASCADES - 1]);
 						float fadeFactor = 1.0 - pow(fade * fade, 8);
 						shadowSample = lerp(1.0, shadowSample, fadeFactor);
 						advanceShadowHistory = true;
