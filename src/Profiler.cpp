@@ -67,7 +67,6 @@ void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context)
 	writeFrame = 0;
 	readFrame = 0;
 	pendingFrames = 0;
-	frameActive = false;
 	frameSkipped = false;
 	initialized = true;
 }
@@ -79,11 +78,6 @@ void Profiler::Release()
 		frame.timers.clear();
 		frame.activeCount = 0;
 	}
-	writeFrame = 0;
-	readFrame = 0;
-	pendingFrames = 0;
-	frameActive = false;
-	frameSkipped = false;
 	results.clear();
 	knownTimers.clear();
 	knownTimerIndex.clear();
@@ -91,6 +85,7 @@ void Profiler::Release()
 	totalTimeMs = 0.0f;
 	cpuTotalTimeMs = 0.0f;
 	initialized = false;
+	frameActive = false;
 	context = nullptr;
 }
 
