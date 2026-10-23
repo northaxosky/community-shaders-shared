@@ -389,6 +389,7 @@ namespace BackgroundBlur
 
 		auto downsampleRTVPtr = downsampleRTV.get();
 		context->OMSetRenderTargets(1, &downsampleRTVPtr, nullptr);
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		context->VSSetShader(vertexShader.get(), nullptr, 0);
 		context->PSSetShader(horizontalPixelShader.get(), nullptr, 0);
 		context->PSSetSamplers(0, 1, &samplerStatePtr);
@@ -511,6 +512,12 @@ namespace BackgroundBlur
 			originalRS->Release();
 	}
 
+	void ReleaseSourceCache()
+	{
+		cachedSourceSRV = nullptr;
+		cachedSourceTexture = nullptr;
+	}
+
 	void Cleanup()
 	{
 		std::lock_guard<std::mutex> lock(resourceMutex);
@@ -529,8 +536,7 @@ namespace BackgroundBlur
 
 		ReleaseBlurTextures();
 
-		cachedSourceSRV = nullptr;
-		cachedSourceTexture = nullptr;
+		ReleaseSourceCache();
 
 		enabled = false;
 		initialized = false;
