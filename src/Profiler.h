@@ -113,7 +113,7 @@ public:
 		endPerfEvent = std::move(endCb);
 	}
 
-	/** @brief Begins a new profiling frame; collects every resolved in-flight frame. Skips the frame if the ring is full. */
+	/** @brief Collects resolved frames; begins one unless the ring is full. */
 	void BeginFrame();
 
 	/**
