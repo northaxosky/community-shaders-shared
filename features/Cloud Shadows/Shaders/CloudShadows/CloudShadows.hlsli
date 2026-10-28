@@ -3,6 +3,11 @@
 
 #include "Common/Game.hlsli"
 
+// Direction toward the sun that the cloud lookup follows; a host may override it.
+#ifndef CLOUD_SHADOWS_SUN_DIRECTION
+#	define CLOUD_SHADOWS_SUN_DIRECTION SharedData::DirLightDirection.xyz
+#endif
+
 namespace CloudShadows
 {
 	TextureCube<float> CloudShadowsTexture : register(t25);
@@ -28,7 +33,7 @@ namespace CloudShadows
 
 	float GetCloudShadowMult(float3 worldPosition, SamplerState textureSampler)
 	{
-		float3 cloudSampleDir = GetCloudShadowSampleDir(worldPosition, SharedData::DirLightDirection.xyz).xyz;
+		float3 cloudSampleDir = GetCloudShadowSampleDir(worldPosition, CLOUD_SHADOWS_SUN_DIRECTION).xyz;
 		float cloudCubeSample = CloudShadowsTexture.SampleLevel(textureSampler, cloudSampleDir, 0).x;
 		return saturate(1.0 - cloudCubeSample * SharedData::cloudShadowsSettings.Opacity);
 	}
