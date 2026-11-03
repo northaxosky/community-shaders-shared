@@ -270,17 +270,19 @@ namespace SharedData
 		float CloudsEdgeMoonMultiplier;
 
 		uint EnableProceduralSun;
-		float ProceduralSunDiskRadiusSq;
-		float ProceduralSunDiskEdgeScale;
-		float ProceduralSunGlowIntensity;
+		float ProceduralSunDiskCos;
+		float ProceduralSunDiskRadiance;
+		float ProceduralSunEdgeSoftness;
 
-		float ProceduralSunCoronaFalloff;
-		float ProceduralSunCoronaScale;
+		float ProceduralSunHaloCos;
+		float ProceduralSunHaloIntensity;
 		uint UseProceduralGradientWeights;
 		float ProceduralGradientWeightCurve;
 
 		float LightSpriteCurve;
-		float3 pad1;
+		float ProceduralSunHaloFalloff;
+		float ProceduralSunRadianceLimit;
+		float pad1;
 
 		float ParticleIntensity;
 		float ParticleLightingInfluence;
@@ -446,6 +448,7 @@ namespace SharedData
 		float pad3;
 		float3 volumetricFogNoiseVelocity;
 		float pad0;
+		float4 originalFogColorOverride;
 	};
 
 	struct TruePBRSettings
@@ -479,6 +482,26 @@ namespace SharedData
 		float MotionStretch;
 		float MotionTransparency;
 		float pad0;
+		float4 TextureBounds;
+		float2 TextureRadiusScale;
+		float2 pad1;
+	};
+
+	struct ProceduralSunSettings
+	{
+		uint enabled;
+		float sunDiskCos;
+		float diskIntensity;
+		float edgeSoftness;
+
+		uint haloEnabled;
+		float sunHaloCos;
+		float haloIntensity;
+		float haloFalloff;
+
+		float cloudOcclusionStrength;
+		float sunQuadModelRadius;
+		float2 pad0;
 	};
 
 	cbuffer FeatureData : register(b6)
@@ -504,6 +527,7 @@ namespace SharedData
 		SkinData skinData;
 		HorizonFixSettings horizonFixSettings;
 		RainRefractionSettings rainRefractionSettings;
+		ProceduralSunSettings proceduralSunSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);
