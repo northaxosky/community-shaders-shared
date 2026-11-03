@@ -245,6 +245,7 @@ private:
 	void SetSunAngle();
 
 	void SetSkyRotation(const RE::Sky* sky, RE::TESObjectCELL* cell);
+	void ResetSkyRotation(const RE::Sky* sky);
 
 	/** @brief Whether the worldspace's editor ID is in the disabled list. */
 	bool IsWorldspaceDisabled(const RE::TESWorldSpace* worldspace) const;

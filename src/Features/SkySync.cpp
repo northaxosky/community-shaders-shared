@@ -426,8 +426,10 @@ bool SkySync::Update(const RE::Sky* sky)
 	active = false;
 	currentDim = 1.0f;
 
-	if (!settings.Enabled)
+	if (!settings.Enabled) {
+		ResetSkyRotation(sky);
 		return std::exchange(immediateTransitionReady, false);
+	}
 
 	if (!sky)
 		return false;
@@ -641,6 +643,22 @@ void SkySync::SetSkyRotation(const RE::Sky* sky, RE::TESObjectCELL* cell)
 
 	currentSkyRotation = rotation;
 	sky->root->local.rotate = RE::NiMatrix3{ RE::NiPoint3{ 0.0f, 0.0f, -rotation } };
+	RE::NiUpdateData updateData;
+	sky->root->Update(updateData);
+}
+
+void SkySync::ResetSkyRotation(const RE::Sky* sky)
+{
+	if (currentSkyRotation == D3D11_FLOAT32_MAX)
+		return;
+
+	// Clear the cache so re-enabling reapplies the cell's north rotation
+	currentSkyRotation = D3D11_FLOAT32_MAX;
+	currentCell = nullptr;
+	if (!sky || !sky->root)
+		return;
+
+	sky->root->local.rotate = RE::NiMatrix3{ RE::NiPoint3{ 0.0f, 0.0f, 0.0f } };
 	RE::NiUpdateData updateData;
 	sky->root->Update(updateData);
 }
