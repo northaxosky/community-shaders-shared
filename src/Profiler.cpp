@@ -78,6 +78,7 @@ void Profiler::Release()
 	}
 	pendingSkipped = {};
 	external = {};
+	externalDirty = false;
 	results.clear();
 	knownTimers.clear();
 	knownTimerIndex.clear();
@@ -201,6 +202,26 @@ void Profiler::ExternalSamples::Add(std::string_view name, float gpuMs)
 	count++;
 }
 
+void Profiler::CloseExternalSamples()
+{
+	if (external.count == 0)
+		return;
+	for (const auto& sample : std::span(external.samples).first(external.count)) {
+		const auto [it, added] = knownTimerIndex.try_emplace(sample.name, knownTimers.size());
+		if (added) {
+			KnownTimer kt;
+			kt.name = sample.name;
+			kt.external = true;
+			knownTimers.push_back(std::move(kt));
+		}
+		auto& known = knownTimers[it->second];
+		known.gpu.PushSample(sample.gpuMs);
+		known.lastSampleFrame = collectedFrames;
+	}
+	external.count = 0;
+	externalDirty = true;
+}
+
 void Profiler::EndFrame()
 {
 	// Before the early returns so it ticks while GPU queries are off.
@@ -209,6 +230,8 @@ void Profiler::EndFrame()
 	if (lastFrameTicks != 0)
 		frameHistory.PushSample(static_cast<float>(static_cast<double>(now.QuadPart - lastFrameTicks) * cpuTicksToMs));
 	lastFrameTicks = now.QuadPart;
+
+	CloseExternalSamples();
 
 	if (!initialized || !context)
 		return;
@@ -312,27 +335,12 @@ void Profiler::CollectResults()
 		}
 	}
 
-	// Independent of the D3D11 frames, so a skipped or disjoint frame loses none.
-	const bool folded = external.count > 0;
-	for (const auto& sample : std::span(external.samples).first(external.count)) {
-		const auto [it, added] = knownTimerIndex.try_emplace(sample.name, knownTimers.size());
-		if (added) {
-			KnownTimer kt;
-			kt.name = sample.name;
-			kt.external = true;
-			knownTimers.push_back(std::move(kt));
-		}
-		auto& known = knownTimers[it->second];
-		known.gpu.PushSample(sample.gpuMs);
-		known.lastSampleFrame = collectedFrames;
-	}
-	external.count = 0;
-
-	if (!collected && !folded)
+	if (!collected && !externalDirty)
 		return;
 
 	RetireStaleTimers();
 
+	externalDirty = false;
 	if (collected) {
 		totalTimeMs = activeTotalMs;
 		cpuTotalTimeMs = activeCpuTotalMs;

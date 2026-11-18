@@ -76,7 +76,6 @@ public:
 		float cpuP95Ms = 0.0f;
 		float cpuP99Ms = 0.0f;
 		bool valid = false;
-		// Recorded through RecordExternalSample; no CPU time, and in no total.
 		bool external = false;
 
 		const float* historyBuffer = nullptr;
@@ -145,10 +144,7 @@ public:
 	 */
 	void MarkPassSkipped(std::string_view name);
 
-	/**
-	 * @brief Records GPU time measured outside the D3D11 queries, e.g. D3D12 work on its own queue.
-	 * @note Call on the EndFrame thread. Needs an active profiler. Samples of one name between collections add up. Rows are flagged external and excluded from the totals.
-	 */
+	/** @brief Adds external (D3D12) GPU time; EndFrame thread, not in totals. */
 	void RecordExternalSample(std::string_view name, float gpuMs);
 
 	/** @brief Ends the current profiling frame and advances the ring buffer write cursor. */
@@ -227,7 +223,7 @@ private:
 		void Add(std::string_view name);
 	};
 
-	/** @brief Pending external samples; the string slots are reused, so recording allocates only on first use. */
+	/** @brief This frame's external samples; slots are reused. */
 	struct ExternalSamples
 	{
 		struct Sample
@@ -297,12 +293,16 @@ private:
 	/** @brief Skip marks made before the frame's first BeginPass; they join that frame. */
 	SkipMarks pendingSkipped;
 	ExternalSamples external;
+	bool externalDirty = false;
 	uint64_t collectedFrames = 0;
 	float totalTimeMs = 0.0f;
 	float cpuTotalTimeMs = 0.0f;
 
 	/** @brief Pushes each resolved frame's samples into the rows and publishes the newest. */
 	void CollectResults();
+
+	/** @brief Folds the frame's external samples into rows, one per name. */
+	void CloseExternalSamples();
 
 	/** @brief Drops timers that have not been sampled for kTimerRetireFrames, so disabled passes stop reporting stale values. */
 	void RetireStaleTimers();

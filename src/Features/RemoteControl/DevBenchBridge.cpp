@@ -401,7 +401,6 @@ namespace
 						continue;
 					json entry{
 						{ "name", r.name },
-						{ "external", r.external },
 						{ "gpuMs", r.gpuTimeMs },
 						{ "gpuAvgMs", r.avgMs },
 						{ "gpuP95Ms", r.p95Ms },
