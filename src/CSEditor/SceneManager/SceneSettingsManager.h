@@ -635,6 +635,22 @@ public:
 		size_t settingCount = 0;
 		bool authored = false;  ///< Holds entries, or is on the user's location list.
 		bool current = false;   ///< The live weather, or a link of the player's location chain.
+		/// settingCount split by feature short name.
+		std::map<std::string, size_t> featureCounts;
+	};
+
+	/** @brief Which features a copy carries; the default carries all of them. */
+	struct CopyFeatureFilter
+	{
+		/// Carries only this feature, when set.
+		std::optional<std::string> only;
+		std::set<std::string> excluded;
+
+		bool Allows(const std::string& featureShortName) const
+		{
+			return (!only || *only == featureShortName) && !excluded.contains(featureShortName);
+		}
+		bool operator==(const CopyFeatureFilter&) const = default;
 	};
 
 	/// One physical setting available to copy.
@@ -674,7 +690,7 @@ public:
 		const SceneContextId& destination) const;
 	/// Copy one source into several destinations as one mutation: one revision bump, one save, one reapply.
 	CopyResult CopySettingsBatch(const SceneContextId& source, std::span<const SceneContextId> destinations,
-		CopyConflictPolicy conflictPolicy);
+		CopyConflictPolicy conflictPolicy, const CopyFeatureFilter& features = {});
 	/// Name one context the way the copy source list spells it.
 	std::string GetSceneContextDisplayName(const SceneContextId& context) const;
 
@@ -853,9 +869,9 @@ public:
 		std::string key;
 		std::string baseline;
 		std::string applied;
-		std::array<std::optional<float>, kPeriodCount> timeOfDayValues{};
-		std::array<std::optional<float>, kPeriodCount> currentWeatherValues{};
-		std::array<std::optional<float>, kPeriodCount> previousWeatherValues{};
+		std::array<std::optional<json>, kPeriodCount> timeOfDayValues{};
+		std::array<std::optional<json>, kPeriodCount> currentWeatherValues{};
+		std::array<std::optional<json>, kPeriodCount> previousWeatherValues{};
 	};
 
 	/// One location float transition mid-flight, sampled for the debug UI.
@@ -1093,6 +1109,8 @@ private:
 	mutable RE::FormID cachedTargetCellId = 0;
 	mutable RE::FormID cachedTargetRegionId = 0;
 	mutable bool locationTargetsCached = false;
+	/// The resolver only matches on keys, so names are filled the first time the editor asks.
+	mutable bool locationTargetsDescribed = false;
 	mutable std::vector<LocationTarget> cachedLocationTargets;
 	mutable std::optional<std::vector<LocationTarget>> cachedLocationCatalog;
 
@@ -1162,6 +1180,9 @@ private:
 	std::optional<SceneContextId> FindSupplyingContext(const SettingIdentity& setting, TimeOfDayPeriod period,
 		RE::FormID weatherId) const;
 
+	/** @brief The player's location chain with only type, form key and FormID filled, for the resolver. */
+	const std::vector<LocationTarget>& GetCurrentLocationTargetKeys() const;
+
 	// --- Per-Weather helpers ---
 	/// Load weather overwrites/user settings once game data is available for SPID resolution.
 	bool TryEnsureWeatherDataLoaded();
@@ -1188,7 +1209,7 @@ private:
 	/** @brief Samples the sky's current and outgoing weather and their blend factor. */
 	WeatherBlend GetWeatherBlend() const;
 	/** @brief The time-of-day layer's value for one period, user over overwrite, else the base value. */
-	float GetTimeOfDayPeriodFallbackFloat(float baseValue, const std::string& featureShortName,
+	json GetTimeOfDayPeriodFallbackValue(const json& baseValue, const std::string& featureShortName,
 		const std::vector<std::string>& settingPath, const std::string& settingKey, int periodIndex) const;
 
 	/// Live sky/time state sampled once per resolve so every setting blends against identical factors.
@@ -1202,7 +1223,7 @@ private:
 	BlendSnapshot blendSnapshot;
 
 	/// Active per-period values for one address, indexed by period.
-	using PeriodValues = std::array<std::optional<float>, kPeriodCount>;
+	using PeriodValues = std::array<std::optional<json>, kPeriodCount>;
 	using PeriodSettingMap = std::map<SettingAddress, PeriodValues>;
 	/** @brief Period values valid while revision matches sceneValueRevision. */
 	struct CachedPeriodSettingMap
@@ -1266,7 +1287,7 @@ private:
 	void OverlayAllEntries(ResolvedSettingMap& resolved, const std::vector<SettingEntry>& sourceEntries,
 		SceneType type, std::map<SettingAddress, float>* transitionDurations = nullptr) const;
 	/** @brief The time-of-day value a weather entry stacks on; a flat entry uses the current period. */
-	std::optional<float> ResolveWeatherLowerValue(RE::FormID weatherId, const SettingAddress& address,
+	std::optional<json> ResolveWeatherLowerValue(RE::FormID weatherId, const SettingAddress& address,
 		TimeOfDayPeriod period, EntrySource selectedSource);
 	/** @brief The feature's own value at an address, null when the catalog does not allow it. */
 	json GetBaselineValue(const SettingAddress& address);
@@ -1320,7 +1341,7 @@ private:
 		const SceneContextId& destination) const;
 	/// Deferring the commit lets a fan-out over the periods land as one save.
 	CopyResult CopySettingsToContext(const SceneContextId& source, const SceneContextId& destination,
-		CopyConflictPolicy conflictPolicy, bool deferCommit);
+		CopyConflictPolicy conflictPolicy, bool deferCommit, const CopyFeatureFilter& features);
 	/// Whether a context holds entries or is on the user's location list.
 	bool IsSceneContextAuthored(const SceneContextId& context) const;
 	/// Whether a context is the live weather or a link of the player's location chain.
@@ -1353,6 +1374,8 @@ private:
 	float EaseLocationTransition(const LocationTransition& transition, float now) const;
 	/** @brief Whether the transition has run its full duration. */
 	static bool IsLocationTransitionFinished(const LocationTransition& transition, float now);
+	/** @brief Whether two transition values differ by less than kBlendEpsilon of their magnitude, so small-range settings still fade. */
+	static bool IsWithinTransitionTolerance(float lhs, float rhs);
 	/** @brief Starts a transition for each location-driven address whose value or membership changed. */
 	void StartLocationTransitions(const ResolvedSettingMap& resolved, float now, bool animateChanges);
 	/// Re-reads each in-flight transition's endpoint so one crossing a time-of-day or weather

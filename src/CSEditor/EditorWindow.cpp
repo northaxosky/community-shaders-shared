@@ -8,6 +8,7 @@
 #include "Features/Effects11.h"
 #include "Features/Effects11/Editor/Effects11Editor.h"
 #include "Features/HDRDisplay.h"
+#include "Features/PhysicalSky.h"
 #include "Features/Skin.h"
 #include "Features/Upscaling.h"
 #include "Globals.h"
@@ -741,6 +742,36 @@ void EditorWindow::ShowWidgetWindow()
 	}
 }
 
+void EditorWindow::ShowCloudWeatherWindow()
+{
+	if (!showCloudWeatherMaps)
+		return;
+	const auto layoutCond = resetLayout ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+	const auto& display = ImGui::GetIO().DisplaySize;
+	const float em = ImGui::GetFontSize();
+	ImGui::SetNextWindowSize({ std::min(34.f * em, display.x * 0.8f), std::min(42.f * em, display.y * 0.8f) }, layoutCond);
+	ImGui::SetNextWindowPos({ display.x * 0.7f, display.y * 0.5f }, layoutCond, { 0.5f, 0.5f });
+	if (cloudWeatherPreviewTab >= 0) {
+		ImGui::SetNextWindowCollapsed(false);
+		ImGui::SetNextWindowFocus();
+	}
+	const auto title = std::format("{}###CloudWeatherMaps", T(TKEY("cloud_weather_maps"), "Cloud Weather Maps"));
+	if (ImGui::Begin(title.c_str(), &showCloudWeatherMaps)) {
+		if (ImGui::BeginTabBar("CloudLayers")) {
+			for (int layer = 0; layer < 2; ++layer) {
+				const auto* label = layer == 0 ? T("feature.physical_sky.composition", "Low Clouds") : T("feature.physical_sky.middle_clouds", "Middle Clouds (As / Ac)");
+				if (ImGui::BeginTabItem(label, nullptr, cloudWeatherPreviewTab == layer ? ImGuiTabItemFlags_SetSelected : 0)) {
+					globals::features::physicalSky.DrawCloudWeatherPreview(layer == 1, true);
+					ImGui::EndTabItem();
+				}
+			}
+			cloudWeatherPreviewTab = -1;
+			ImGui::EndTabBar();
+		}
+	}
+	ImGui::End();
+}
+
 void EditorWindow::DrawEditorWindows(float scale, float actionBarBottom)
 {
 	const float pad = ThemeManager::Constants::OVERLAY_WINDOW_POSITION * scale;
@@ -781,6 +812,7 @@ void EditorWindow::DrawEditorWindows(float scale, float actionBarBottom)
 	}
 
 	ShowWidgetWindow();
+	ShowCloudWeatherWindow();
 
 	// Locations are not form widgets, so their windows are drawn alongside the widget pass.
 	SceneSettingsUI::DrawLocationWindows();
@@ -980,6 +1012,7 @@ void EditorWindow::RenderUI()
 				}
 				ImGui::Checkbox(T(TKEY("palette"), "Palette"), &PaletteWindow::GetSingleton()->open);
 				ImGui::Checkbox(T(TKEY("weather_picker"), "Weather Picker"), &WeatherPickerWindow::GetSingleton()->open);
+				ImGui::Checkbox(T(TKEY("cloud_weather_maps"), "Cloud Weather Maps"), &showCloudWeatherMaps);
 				ImGui::Checkbox(T(TKEY("weather_debug"), "Weather Debug"), &showWeatherDebug);
 				Util::AddTooltip(T(TKEY("weather_debug_tooltip"), "Current and last weather details, plus rain & wetness analysis from other features"));
 				if (ImGui::Checkbox(T(TKEY("base_settings_window"), "Base Settings"), &settings.showFeaturesWindow))
@@ -1376,16 +1409,15 @@ void EditorWindow::SetupResources()
 
 	// Widgets load their saves as they are made, and saved form references resolve through the
 	// collections of the forms they name, so those are populated first.
-	Util::FormEditorIDIndex editorIDs;
-	WidgetFactory::PopulateSimpleWidgets<RE::BGSArtObject>(artObjectWidgets, editorIDs);
-	WidgetFactory::PopulateSimpleWidgets<RE::TESEffectShader>(effectShaderWidgets, editorIDs);
-	WidgetFactory::PopulateWidgets<ImageSpaceWidget, RE::TESImageSpace>(imageSpaceWidgets, editorIDs);
-	WidgetFactory::PopulateWidgets<VolumetricLightingWidget, RE::BGSVolumetricLighting>(volumetricLightingWidgets, editorIDs);
-	WidgetFactory::PopulateWidgets<PrecipitationWidget, RE::BGSShaderParticleGeometryData>(precipitationWidgets, editorIDs);
-	WidgetFactory::PopulateWidgets<LensFlareWidget, RE::BGSLensFlare>(lensFlareWidgets, editorIDs);
-	WidgetFactory::PopulateWidgets<ReferenceEffectWidget, RE::BGSReferenceEffect>(referenceEffectWidgets, editorIDs);
-	WidgetFactory::PopulateWidgets<LightingTemplateWidget, RE::BGSLightingTemplate>(lightingTemplateWidgets, editorIDs);
-	WidgetFactory::PopulateWidgets<WeatherWidget, RE::TESWeather>(weatherWidgets, editorIDs);
+	WidgetFactory::PopulateSimpleWidgets<RE::BGSArtObject>(artObjectWidgets);
+	WidgetFactory::PopulateSimpleWidgets<RE::TESEffectShader>(effectShaderWidgets);
+	WidgetFactory::PopulateWidgets<ImageSpaceWidget, RE::TESImageSpace>(imageSpaceWidgets);
+	WidgetFactory::PopulateWidgets<VolumetricLightingWidget, RE::BGSVolumetricLighting>(volumetricLightingWidgets);
+	WidgetFactory::PopulateWidgets<PrecipitationWidget, RE::BGSShaderParticleGeometryData>(precipitationWidgets);
+	WidgetFactory::PopulateWidgets<LensFlareWidget, RE::BGSLensFlare>(lensFlareWidgets);
+	WidgetFactory::PopulateWidgets<ReferenceEffectWidget, RE::BGSReferenceEffect>(referenceEffectWidgets);
+	WidgetFactory::PopulateWidgets<LightingTemplateWidget, RE::BGSLightingTemplate>(lightingTemplateWidgets);
+	WidgetFactory::PopulateWidgets<WeatherWidget, RE::TESWeather>(weatherWidgets);
 }
 
 void EditorWindow::ReloadFormEdits(const FormEditSources::FormKeySet& keys)
@@ -1461,6 +1493,9 @@ void EditorWindow::UpdateOpenState()
 				std::vformat(T(TKEY("weather_still_locked"), "Weather is still locked: {}"), std::make_format_args(weatherName)),
 				Util::Colors::GetWarning(), kLongNotificationDuration);
 		}
+		// A pause owned by a panel releases itself right after the close, so only the user's is worth a warning.
+		if (timePaused && !SceneSettingsUI::IsTimePausedByPanel())
+			ShowNotification(T(TKEY("time_still_paused"), "Time is still paused"), Util::Colors::GetWarning(), kLongNotificationDuration);
 		delete tempTexture;
 		tempTexture = nullptr;
 		for (auto& widget : weatherWidgets)
@@ -2114,15 +2149,18 @@ void EditorWindow::UnlockWeather()
 
 void EditorWindow::PauseTime()
 {
+	auto calendar = Util::Climate::GetCalendar();
+	if (!calendar || !calendar->timeScale)
+		return;
+	// A nonzero timescale set elsewhere (a save load, the console) means our pause flag is stale
+	if (timePaused && calendar->timeScale->value > 0.0f)
+		timePaused = false;
 	if (timePaused)
 		return;
-	auto calendar = Util::Climate::GetCalendar();
-	if (calendar && calendar->timeScale) {
-		savedTimeScale = calendar->timeScale->value;
-		calendar->timeScale->value = 0.0f;
-		timePaused = true;
-		logger::info("Time paused (saved timescale: {})", savedTimeScale);
-	}
+	savedTimeScale = calendar->timeScale->value;
+	calendar->timeScale->value = 0.0f;
+	timePaused = true;
+	logger::info("Time paused (saved timescale: {})", savedTimeScale);
 }
 
 void EditorWindow::ResumeTime()
@@ -2374,8 +2412,12 @@ bool EditorWindow::DrawTimePauseToggle(const char* id, const ImVec2& size)
 	const ImU32 glyphColor = ImGui::GetColorU32(ImGuiCol_Text);
 	const bool isPaused = IsTimePaused();
 	const bool clicked = DrawToggleIconButton(id, Icons::TI(ICON_TI_CLOCK_PAUSE), isPaused, pausedColor, buttonSize, glyphColor);
-	if (clicked)
+	if (clicked) {
 		TogglePause();
+		// Only a pause the user just started becomes theirs; a failed pause or resume leaves ownership alone.
+		if (!isPaused && IsTimePaused())
+			SceneSettingsUI::ClaimTimePause();
+	}
 	return clicked;
 }
 

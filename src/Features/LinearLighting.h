@@ -32,7 +32,6 @@ struct LinearLighting : Feature
 
 	struct Settings
 	{
-		uint enableLinearLighting = true;
 		uint enableACEScg = false;
 		float gameGamma = 1.6f;
 		float diffuseGamma = 2.2f;
@@ -107,6 +106,10 @@ struct LinearLighting : Feature
 	RE::NiColor SRGBToWorking(RE::NiColor color) const;
 	void SRGBToWorking(float* color) const;
 	RE::NiColor LightColorToWorking(const RE::NiLight* light, bool effect = false) const;
+	bool IsSunlightOverridden(const RE::NiLight* light) const;
+	/** @brief Whether any light currently carries a working-space sunlight override. */
+	bool HasSunlightOverride() const { return workingSunlight != nullptr; }
+	float GetSunlightScale(const RE::NiLight* light) const;
 	void SetSunlightColor(RE::NiLight* light, RE::NiColor color);
 	void ClearSunlightColor(const RE::NiLight* light);
 
