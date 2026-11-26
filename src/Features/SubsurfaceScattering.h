@@ -58,6 +58,8 @@ public:
 		uint pad;
 		float4 MeanFreePathBase;
 		float4 MeanFreePathHuman;
+		uint DispatchOrigin[2]{};
+		uint padOrigin[2]{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(BlurCB);
 
