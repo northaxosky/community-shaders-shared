@@ -347,54 +347,20 @@ void VoxelCloudManager::UpdateLighting(ID3D11ComputeShader* shader, float3 direc
 	context->CSSetShaderResources(85, 1, &view);
 }
 
-std::array<uint32_t, 4> VoxelCloudManager::ScreenRect(float bottomZ, uint32_t width, uint32_t height) const
+Util::ScreenRect VoxelCloudManager::ScreenRect(float bottomZ, uint32_t width, uint32_t height) const
 {
 	if (active.empty())
 		return {};
 	if (REL::Module::IsVR())
 		return { 0, 0, width, height };
-	const auto camera = globals::game::frameBufferCached.GetCameraPosAdjust();
-	const auto matrix = globals::game::frameBufferCached.GetCameraViewProjUnjittered().Transpose();
-	float2 lower{ 1.f, 1.f }, upper{};
+	Util::ScreenRect rect;
 	for (const auto& cloud : active) {
 		// Match the longest local lighting probe, as for storm screen rectangles.
-		const float3 extent = HalfBounds(cloud) + float3{ 240.f, 240.f, 240.f };
-		uint32_t outside = 31u;
-		bool crossesEye = false;
-		float2 boxLower{ 1.f, 1.f }, boxUpper{};
-		for (uint32_t corner = 0; corner < 8; ++corner) {
-			const float4 point{
-				(cloud.centerWeight.x + (corner & 1u ? extent.x : -extent.x)) / Util::Units::GAME_UNIT_TO_M - camera.x,
-				(cloud.centerWeight.y + (corner & 2u ? extent.y : -extent.y)) / Util::Units::GAME_UNIT_TO_M - camera.y,
-				(cloud.centerWeight.z + (corner & 4u ? extent.z : -extent.z)) / Util::Units::GAME_UNIT_TO_M + bottomZ - camera.z, 1.f
-			};
-			const auto clip = float4::Transform(point, matrix);
-			crossesEye |= clip.w <= 0.f;
-			if (clip.w > 0.f) {
-				const float x = clip.x / clip.w * .5f + .5f, y = .5f - clip.y / clip.w * .5f;
-				boxLower.x = std::min(boxLower.x, x);
-				boxLower.y = std::min(boxLower.y, y);
-				boxUpper.x = std::max(boxUpper.x, x);
-				boxUpper.y = std::max(boxUpper.y, y);
-			}
-			outside &= (clip.x < -clip.w ? 1u : 0u) | (clip.x > clip.w ? 2u : 0u) |
-			           (clip.y < -clip.w ? 4u : 0u) | (clip.y > clip.w ? 8u : 0u) | (clip.w <= 0.f ? 16u : 0u);
-		}
-		if (outside)
-			continue;
-		if (crossesEye)
-			return { 0, 0, width, height };
-		lower.x = std::min(lower.x, boxLower.x);
-		lower.y = std::min(lower.y, boxLower.y);
-		upper.x = std::max(upper.x, boxUpper.x);
-		upper.y = std::max(upper.y, boxUpper.y);
+		const float3 extent = (HalfBounds(cloud) + float3{ 240.f, 240.f, 240.f }) / Util::Units::GAME_UNIT_TO_M;
+		const float3 center = float3{ cloud.centerWeight.x, cloud.centerWeight.y, cloud.centerWeight.z } / Util::Units::GAME_UNIT_TO_M + float3{ 0.f, 0.f, bottomZ };
+		rect.Include(Util::ProjectBoxToScreenRect(center, extent, { (float)width, (float)height }));
 	}
-	if (upper.x <= lower.x || upper.y <= lower.y)
-		return {};
-	return { static_cast<uint32_t>(std::max(0.f, std::floor(lower.x * width) - 1.f)),
-		static_cast<uint32_t>(std::max(0.f, std::floor(lower.y * height) - 1.f)),
-		static_cast<uint32_t>(std::min(float(width), std::ceil(upper.x * width) + 1.f)),
-		static_cast<uint32_t>(std::min(float(height), std::ceil(upper.y * height) + 1.f)) };
+	return rect;
 }
 
 void VoxelCloudManager::DrawSettings(SceneBlend& selection, const std::string& worldspace, float3 cameraMeters)
@@ -462,10 +428,14 @@ void VoxelCloudManager::DrawSettings(SceneBlend& selection, const std::string& w
 			changed |= ImGui::Checkbox(T(TKEY("voxel_enabled"), "Enable placement"), &placement.enabled);
 			changed |= ImGui::InputText(T(TKEY("voxel_worldspace"), "Worldspace Editor ID"), &placement.worldspace);
 			changed |= ImGui::DragFloat3(T(TKEY("voxel_center"), "Center X / Y / Z (m)"), &placement.center.x, 1.f);
+			Util::HoverTip(T(TKEY("voxel_center_tooltip"), "World position of the volume's center in metres. Z is measured from the worldspace ground level."));
 			changed |= ImGui::DragFloat3(T(TKEY("voxel_rotation"), "Rotation X / Y / Z (degrees)"), &placement.rotation.x, 1.f);
 			changed |= ImGui::DragFloat(T(TKEY("voxel_scale"), "Uniform scale"), &placement.scale, .01f, .001f, 100.f);
+			Util::HoverTip(T(TKEY("voxel_scale_tooltip"), "Scales the whole volume evenly, applied after the bounding box size."));
 			changed |= ImGui::SliderFloat(T(TKEY("voxel_strength"), "Height reveal"), &placement.strength, 0.f, 1.f);
+			Util::HoverTip(T(TKEY("voxel_strength_tooltip"), "Reveals the cloud from its top down along its local height. 1 shows the whole volume; lower values keep only the upper part; 0 hides it."));
 			changed |= ImGui::DragFloat(T(TKEY("voxel_density"), "Density multiplier"), &placement.density, .01f, 0.f, 10.f);
+			Util::HoverTip(T(TKEY("voxel_density_tooltip"), "Multiplies the volume's extinction. Higher values make the cloud more opaque and darker inside."));
 			if (const auto found = assets.find(placement.asset); found != assets.end()) {
 				const auto& asset = found->second;
 				float boxSize = placement.boxSize > 0.f ? placement.boxSize : std::max({ asset.size.x, asset.size.y, asset.size.z });
@@ -473,16 +443,19 @@ void VoxelCloudManager::DrawSettings(SceneBlend& selection, const std::string& w
 					placement.boxSize = boxSize;
 					changed = true;
 				}
+				Util::HoverTip(T(TKEY("voxel_box_size_tooltip"), "Length of the volume's longest side. The other sides keep the asset's proportions."));
 				float frequency = placement.noiseFrequency > 0.f ? placement.noiseFrequency : asset.noiseFrequency;
 				if (ImGui::DragFloat(T(TKEY("voxel_noise_frequency"), "Noise frequency multiplier"), &frequency, .01f, .001f, 100.f)) {
 					placement.noiseFrequency = frequency;
 					changed = true;
 				}
+				Util::HoverTip(T(TKEY("voxel_noise_frequency_tooltip"), "Scales the detail noise that erodes the volume. Higher values give smaller, busier detail."));
 				float adjustment = placement.noiseFrequencyAdjustmentDistance >= 0.f ? placement.noiseFrequencyAdjustmentDistance : asset.noiseFrequencyAdjustmentDistance;
 				if (ImGui::DragFloat(T(TKEY("voxel_noise_adjustment"), "Noise frequency adjustment distance (m)"), &adjustment, 1.f, 0.f, 100000.f)) {
 					placement.noiseFrequencyAdjustmentDistance = adjustment;
 					changed = true;
 				}
+				Util::HoverTip(T(TKEY("voxel_noise_adjustment_tooltip"), "Kept from the source asset for reference. The current voxel shader does not use it."));
 				bool mips = placement.noiseMipsEnabled >= 0 ? placement.noiseMipsEnabled != 0 : asset.noiseMipsEnabled;
 				if (ImGui::Checkbox(T(TKEY("voxel_noise_mips"), "Adjust noise detail with distance"), &mips)) {
 					placement.noiseMipsEnabled = mips ? 1 : 0;
@@ -495,6 +468,7 @@ void VoxelCloudManager::DrawSettings(SceneBlend& selection, const std::string& w
 					changed = true;
 				}
 				ImGui::EndDisabled();
+				Util::HoverTip(T(TKEY("voxel_noise_mip_distance_tooltip"), "Distance at which noise detail drops by one level. Larger values keep fine detail farther away."));
 				if (ImGui::Button(T(TKEY("voxel_asset_defaults"), "Restore default size and noise settings"))) {
 					placement.boxSize = placement.noiseFrequency = placement.noiseMipDistance = 0.f;
 					placement.noiseFrequencyAdjustmentDistance = -1.f;

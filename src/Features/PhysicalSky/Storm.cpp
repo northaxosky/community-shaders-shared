@@ -511,13 +511,12 @@ bool CloudStormManager::Replaces(const RE::BSGeometry* geometry) const
 	return false;
 }
 
-std::array<uint32_t, 4> CloudStormManager::ScreenRect(float bottomZ, uint32_t width, uint32_t viewHeight, float2 weatherAltitude, float curvatureRadius) const
+Util::ScreenRect CloudStormManager::ScreenRect(float bottomZ, uint32_t width, uint32_t viewHeight, float2 weatherAltitude, float curvatureRadius) const
 {
 	if (REL::Module::IsVR())
-		return active.empty() ? std::array<uint32_t, 4>{} : std::array<uint32_t, 4>{ 0, 0, width, viewHeight };
+		return active.empty() ? Util::ScreenRect{} : Util::ScreenRect{ 0, 0, width, viewHeight };
 	const auto camera = globals::game::frameBufferCached.GetCameraPosAdjust();
-	const auto matrix = globals::game::frameBufferCached.GetCameraViewProjUnjittered().Transpose();
-	float2 screenMin{ 1.f, 1.f }, screenMax{};
+	Util::ScreenRect rect;
 	for (const auto& storm : active) {
 		// Include the longest local light probe, so an off-screen storm can still
 		// shadow a visible cloud. Distant lighting and reflections use the full path.
@@ -538,41 +537,13 @@ std::array<uint32_t, 4> CloudStormManager::ScreenRect(float bottomZ, uint32_t wi
 			lower.z = std::min(lower.z, weatherAltitude.x * 0.01428f - curvature - 270.f);
 			upper.z = std::max(upper.z, weatherAltitude.y * 0.01428f + 270.f);
 		}
-		uint32_t outside = 31u;
-		bool crossesEye = false;
-		float2 lowerScreen{ 1.f, 1.f }, upperScreen{};
-		for (uint32_t corner = 0; corner < 8; ++corner) {
-			const float4 point{ ((corner & 1u) ? upper.x : lower.x) / 0.01428f - camera.x,
-				((corner & 2u) ? upper.y : lower.y) / 0.01428f - camera.y,
-				((corner & 4u) ? upper.z : lower.z) / 0.01428f + bottomZ - camera.z, 1.f };
-			const auto clip = float4::Transform(point, matrix);
-			crossesEye |= clip.w <= 0.f;
-			if (clip.w > 0.f) {
-				const float x = clip.x / clip.w * 0.5f + 0.5f;
-				const float y = 0.5f - clip.y / clip.w * 0.5f;
-				lowerScreen.x = std::min(lowerScreen.x, x);
-				lowerScreen.y = std::min(lowerScreen.y, y);
-				upperScreen.x = std::max(upperScreen.x, x);
-				upperScreen.y = std::max(upperScreen.y, y);
-			}
-			outside &= (clip.x < -clip.w ? 1u : 0u) | (clip.x > clip.w ? 2u : 0u) |
-			           (clip.y < -clip.w ? 4u : 0u) | (clip.y > clip.w ? 8u : 0u) | (clip.w <= 0.f ? 16u : 0u);
-		}
-		if (outside != 0u)
-			continue;
-		if (crossesEye)
-			return { 0, 0, width, viewHeight };
-		screenMin.x = std::min(screenMin.x, lowerScreen.x);
-		screenMin.y = std::min(screenMin.y, lowerScreen.y);
-		screenMax.x = std::max(screenMax.x, upperScreen.x);
-		screenMax.y = std::max(screenMax.y, upperScreen.y);
+		const float3 center = (lower + upper) * 0.5f / 0.01428f + float3{ 0.f, 0.f, bottomZ };
+		rect.Include(Util::ProjectBoxToScreenRect(center, (upper - lower) * 0.5f / 0.01428f, { (float)width, (float)viewHeight }));
 	}
-	if (screenMax.x <= screenMin.x || screenMax.y <= screenMin.y)
+	if (rect.Empty())
 		return {};
-	// Round out to whole groups, with one pixel for the temporal sample phase.
-	const auto lowerPixel = [](float v, uint32_t size) { return static_cast<uint32_t>(std::max(std::floor(v * size) - 1.f, 0.f)) & ~7u; };
-	const auto upperPixel = [](float v, uint32_t size) { return std::min((static_cast<uint32_t>(std::max(std::ceil(v * size) + 1.f, 0.f)) + 7u) & ~7u, size); };
-	return { lowerPixel(screenMin.x, width), lowerPixel(screenMin.y, viewHeight), upperPixel(screenMax.x, width), upperPixel(screenMax.y, viewHeight) };
+	// Round out to whole groups.
+	return { rect.left & ~7u, rect.top & ~7u, std::min((rect.right + 7u) & ~7u, width), std::min((rect.bottom + 7u) & ~7u, viewHeight) };
 }
 
 void PhysicalSky::UpdateCloudStorm(const std::string& worldspace)
@@ -720,6 +691,7 @@ void CloudStormManager::DrawSettings()
 				}
 			ImGui::EndCombo();
 		}
+		Util::HoverTip(T(TKEY("storm_mode_tooltip"), "Supercell builds a rotating thunderstorm with banded inflow and an anvil. Volcanic builds a rising, rotating eruption plume that bends with the wind."));
 		changed |= ImGui::Checkbox(T(TKEY("storm_enabled"), "Enable storm"), &storm.enabled);
 		changed |= ImGui::InputText(T(TKEY("storm_asset"), "Storm back folder (relative to instance)"), &storm.asset);
 		changed |= ImGui::InputText(T(TKEY("storm_core_asset"), "Core NDF folder (relative to instance, optional)"), &storm.coreAsset);
@@ -745,24 +717,38 @@ void CloudStormManager::DrawSettings()
 		changed |= editRules(T(TKEY("storm_replacement_textures"), "Replaced effect textures (one per line)"), storm.replacementTextures);
 		changed |= ImGui::InputText(T(TKEY("storm_worldspace"), "Storm worldspace Editor ID"), &storm.worldspace);
 		changed |= ImGui::DragFloat2(T(TKEY("storm_center"), "Storm center X / Y (m)"), &storm.center.x, 10.f);
+		Util::HoverTip(T(TKEY("storm_center_tooltip"), "World position of the storm's center in metres. The storm stays anchored there rather than drifting with the weather."));
 		changed |= ImGui::DragFloat(T(TKEY("storm_radius"), "Vortex radius (m)"), &storm.radius, 10.f, 1.f, 16000.f);
 		changed |= ImGui::DragFloat(T(TKEY("storm_back_half_size"), "Storm back half-size (m)"), &storm.backHalfSize, 10.f, 1.f, 16000.f);
+		Util::HoverTip(T(TKEY("storm_back_half_size_tooltip"), "Half the width of the area covered by the storm back template."));
 		changed |= ImGui::DragFloat(T(TKEY("storm_back_rotation"), "Storm back rotation (degrees)"), &storm.backRotation, 1.f);
 		changed |= ImGui::Checkbox(T(TKEY("storm_back_mirror"), "Mirror storm back"), &storm.mirrorBack);
 		changed |= ImGui::SliderFloat(T(TKEY("storm_core_height"), "Core height within NDF span"), &storm.coreHeight, 0.f, 1.f);
+		Util::HoverTip(T(TKEY("storm_core_height_tooltip"), "Normalized height of the analytic core and the back template within the storm's height span."));
 		changed |= ImGui::DragFloat(T(TKEY("storm_altitude"), "NDF height zero (m)"), &storm.altitude, 10.f, -24000.f, 48000.f);
+		Util::HoverTip(T(TKEY("storm_altitude_tooltip"), "Altitude of the storm's height 0 above the worldspace ground level."));
 		changed |= ImGui::DragFloat(T(TKEY("storm_height"), "NDF height span (m)"), &storm.height, 10.f, 1.f, 24000.f);
+		Util::HoverTip(T(TKEY("storm_height_tooltip"), "Vertical distance covered by the storm's normalized heights, from height 0 to 1."));
 		changed |= ImGui::SliderFloat(T(TKEY("storm_strength"), "Storm strength"), &storm.strength, 0.f, 1.f);
+		Util::HoverTip(T(TKEY("storm_strength_tooltip"), "How strongly the storm replaces the surrounding weather clouds and how far its core reaches. 1 is the full authored storm."));
 		if (storm.mode == "Volcanic") {
 			changed |= ImGui::DragFloat2(T(TKEY("storm_top_offset"), "Plume top offset X / Y (m)"), &storm.topOffset.x, 10.f, -16000.f, 16000.f);
+			Util::HoverTip(T(TKEY("storm_top_offset_tooltip"), "Extra horizontal shift of the plume top relative to the vent, added to any wind bending."));
 			changed |= ImGui::SliderFloat(T(TKEY("storm_wind_influence"), "Wind bending strength"), &storm.windInfluence, 0.f, 2.f);
+			Util::HoverTip(T(TKEY("storm_wind_influence_tooltip"), "How strongly the wind bends the rising column and carries its outflow downwind. 0 keeps the plume upright."));
 		}
 		changed |= ImGui::SliderFloat(T(TKEY("storm_rotation"), "Storm rotation speed"), &storm.rotation, -4.f, 4.f);
+		Util::HoverTip(T(TKEY("storm_rotation_tooltip"), "Multiplies how fast the storm's noise bands rotate. Negative values reverse the direction."));
 		changed |= ImGui::SliderFloat(T(TKEY("storm_updraft"), "Storm updraft (m/s)"), &storm.updraft, -80.f, 80.f);
+		Util::HoverTip(T(TKEY("storm_updraft_tooltip"), "Supercell: how fast the anvil lifts. Volcanic: vent speed, which scales the rise and the crown outflow."));
 		changed |= ImGui::SliderFloat(T(TKEY("storm_density"), "Storm density"), &storm.density, 0.f, 4.f);
+		Util::HoverTip(T(TKEY("storm_density_tooltip"), "Extinction multiplier for the storm cloud, independent of the weather clouds' extinction scale."));
 		changed |= ImGui::SliderFloat(T(TKEY("storm_albedo"), "Storm single scattering albedo"), &storm.albedo, 0.f, 0.9999f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+		Util::HoverTip(T(TKEY("storm_albedo_tooltip"), "Fraction of light the storm cloud scatters rather than absorbs. Lower values give darker storms, such as ash plumes."));
 		changed |= ImGui::ColorEdit3(T(TKEY("storm_emission"), "Storm emission"), &storm.emission.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+		Util::HoverTip(T(TKEY("storm_emission_tooltip"), "Light emitted by the storm cloud itself, strongest at its base, such as lava glow on an eruption plume. Black disables it."));
 		changed |= ImGui::SliderFloat(T(TKEY("storm_emission_height"), "Emitting height fraction"), &storm.emissionHeight, 0.001f, 1.f);
+		Util::HoverTip(T(TKEY("storm_emission_height_tooltip"), "How far up the storm the emission reaches, as a fraction of its height. The glow fades exponentially with height."));
 		if (changed) {
 			key.reset();
 			++revision;

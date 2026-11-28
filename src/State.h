@@ -22,6 +22,7 @@ using json = nlohmann::json;
 #include <Hooks.h>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 struct Feature;
 
@@ -213,13 +214,10 @@ public:
 	/** @brief Drops the user's edits to every setting an enabled Baseline pack sets on one feature. */
 	void ClearFeatureEditsUnderBaselines(Feature* feature);
 
-	/** @brief Notes that feature settings were edited, so the main menu's Save shows them as unsaved. */
-	void MarkSettingsChanged() { settingsChanged = true; }
+	/** @brief Notes that a feature's settings were edited, without diffing them; for edits still in progress. */
+	void MarkSettingsChanged(Feature* feature);
 
-	/**
-	 * @brief Marks the settings changed if a feature's settings now differ from what was last saved or
-	 *        loaded. For actions ImGui does not flag as edits, such as a button that resets or applies a preset.
-	 */
+	/** @brief Marks a feature unsaved when its settings differ from what was last saved or loaded, and clears it otherwise. */
 	void CheckFeatureSettingsChanged(Feature* feature);
 
 	/** @brief Re-checks the sections that are not feature settings (Menu, General, ...) against the last save or
@@ -228,9 +226,9 @@ public:
 
 	/** @brief Core settings, as JSON pointers into the user config, that save themselves when the menu closes and
 	 *  never count as unsaved. */
-	static constexpr std::array<std::string_view, 5> SELF_SAVING_SETTINGS = {
+	static constexpr std::array<std::string_view, 6> SELF_SAVING_SETTINGS = {
 		"/Menu/RecentFeatures", "/Menu/LastSettingsSection", "/Menu/FeatureListSort", "/Menu/SkipConstraintWarning",
-		"/Menu/SkipClearCacheConfirmation"
+		"/Menu/SkipClearCacheConfirmation", "/Menu/ShowPerformanceOverlay"
 	};
 
 	/**
@@ -263,7 +261,7 @@ public:
 	}
 
 	/** @brief True when the user config has changes not yet saved. */
-	bool HasUnsavedChanges() const { return settingsChanged || coreSettingsChanged; }
+	bool HasUnsavedChanges() const { return !changedFeatures.empty() || coreSettingsChanged; }
 
 	/** @brief Loads the active theme preset from the menu settings. */
 	void LoadTheme();
@@ -653,8 +651,8 @@ private:
 	nlohmann::json BuildFeatureBase(Feature* feature);
 	/** @brief The part of a feature's settings that differs from its base: the user's edits. */
 	nlohmann::json DiffFromFeatureBase(const std::string& featureName, const nlohmann::json& current) const;
-	/** @brief Replaces each feature's full settings in a config with only the user's edits to it. */
-	void KeepOnlyUserEdits(nlohmann::json& settings);
+	/** @brief Strips a config to user edits; returns them for Save to commit. */
+	std::unordered_map<std::string, nlohmann::json> KeepOnlyUserEdits(nlohmann::json& settings) const;
 
 	/** @brief Writes the sections that are not feature settings; the caller holds m_mutex. */
 	void SaveCoreToJson(nlohmann::json& settings);
@@ -666,7 +664,8 @@ private:
 	 *  The caller holds a SceneLayerGuard. */
 	void DropEditsUnder(Feature* feature, const nlohmann::json& packData);
 
-	bool settingsChanged = false;
+	/// GetName() of each feature whose settings differ from the last save or load.
+	std::unordered_set<std::string> changedFeatures;
 	bool coreSettingsChanged = false;
 	/// The core sections as last saved or loaded; partial saves patch it.
 	nlohmann::json savedCore;

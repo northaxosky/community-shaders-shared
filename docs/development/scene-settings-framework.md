@@ -333,6 +333,9 @@ Compatibility is **group-aware**: members of one logical control (a colour, a ve
 `CopyGroupKey`, and one unusable member disqualifies the whole group, so a copy can never leave half a
 colour behind.
 
+**Tombstones copy too**, but only into a destination with an `Overwrite` at the same address and no tombstone
+there yet; elsewhere there is nothing for them to suppress, so they are left out of the candidates.
+
 **Conflicts** are compatible settings the destination already holds as a `User` entry.
 `CopyConflictPolicy::SkipExisting` leaves the whole conflicting group alone, `OverwriteExisting` replaces
 the value in place (keeping the existing `originalValue`), and `Cancel` aborts the entire operation and
@@ -392,8 +395,8 @@ are **blocked** rather than clobbering it, and unknown fields on an entry are pr
     - `ScreenSpaceGI`'s `ResolutionMode`, `EnableGI`, `EnableTemporalDenoiser` and
       `EnableExperimentalSpecularGI`: each is a shader define, so a change recompiles every SSGI compute
       shader on the render thread and a location transition would hitch.
-- `kLocationFeatureWhitelist` (8) and `kTimeOfDayFeatureWhitelist` (11): which features those scene types
-  may target.
+- `kLocationFeatureWhitelist` (9) and `kTimeOfDayFeatureWhitelist` (13): which features those scene types
+  may target. Weather pages use the time-of-day list.
 
 `PostProcessing` defers its load: `LoadSettings` stores the JSON and `ProcessSettings` applies it in
 `Prepass`. Its per-load path must stay cheap because a blend reloads every frame, so sub-features reconcile
@@ -494,8 +497,8 @@ rather than an authoring panel.
   this fork's `Feature`.
 - Upstream's `InvertedCheckbox`, `RadioButton`, `ActiveControlStorageGuard` and
   `GetActiveControlStorageAddress` UI helpers, used only by the excluded UI.
-- `PerformanceOverlay` `ShowInOverlay` as a scene-controllable checkbox. The Profiling page's Display card no longer
-  draws it, so the setting has no catalog binding and `PerformanceOverlay` drops from 12 to 11 in the floors file.
+- `PerformanceOverlay` visibility as a scene-controllable checkbox. It is `Menu::Settings::ShowPerformanceOverlay`,
+  not a feature setting, so `PerformanceOverlay` drops from 12 to 11 in the floors file.
   Existing override entries for it in `SceneManager.json` or the overwrite folders stop resolving: the loader keeps
   them as unresolved entries and writes them back on save, but never applies them, so they are inert. The overlay
   is still toggled from the Profiling page's power button and the overlay hotkey.

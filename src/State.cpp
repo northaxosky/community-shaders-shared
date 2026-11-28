@@ -549,6 +549,9 @@ void State::Load(bool a_allowReload)
 		logger::info("No usable user config at: {}", userConfigFilePath.string());
 	}
 
+	// Before the layering below, so a newly applied default pack's Baseline and boot toggles take effect this launch.
+	const auto defaultPackBootToggles = UnifiedPresetCatalog::GetSingleton().ApplyDefaultPackIfNew();
+
 	// Step 3: Layer each feature's settings; the user's edits win over Baseline packs
 	BaselineManager::GetSingleton()->DiscoverFiles();
 	featureBases.clear();
@@ -594,6 +597,8 @@ void State::Load(bool a_allowReload)
 		}
 
 		json& disabledFeaturesJson = settings["Disable at Boot"];
+		if (defaultPackBootToggles)
+			disabledFeaturesJson.update(*defaultPackBootToggles);
 		logger::info("Loading 'Disable at Boot' settings");
 
 		// Load runs again on config switches; stale entries would otherwise outlive the config that set them.
@@ -643,6 +648,9 @@ void State::Load(bool a_allowReload)
 
 		if (settings["Version"].is_string() && settings["Version"].get<std::string>() != Plugin::VERSION.string()) {
 			logger::info("Found older config for version {}; upgrading to {}", (std::string)settings["Version"], Plugin::VERSION.string());
+			Save();
+		} else if (defaultPackBootToggles) {
+			// Unsaved, the pack's boot toggles would fall back to the feature defaults next launch.
 			Save();
 		}
 
@@ -747,15 +755,20 @@ json State::CaptureCoreSettings()
 
 void State::MarkSettingsSaved()
 {
-	settingsChanged = false;
+	changedFeatures.clear();
 	coreSettingsChanged = false;
 	savedCore = CaptureCoreSettings();
+}
+
+void State::MarkSettingsChanged(Feature* feature)
+{
+	changedFeatures.insert(feature->GetName());
 }
 
 void State::CheckFeatureSettingsChanged(Feature* feature)
 {
 	InvalidateEditsUnderBaselines(feature);
-	if (settingsChanged || !feature->loaded || !feature->UsesMainSettings())
+	if (!feature->loaded || !feature->UsesMainSettings())
 		return;
 	const auto name = feature->GetName();
 	const auto base = featureBases.find(name);
@@ -766,8 +779,10 @@ void State::CheckFeatureSettingsChanged(Feature* feature)
 	SceneSettingsManager::SceneLayerGuard sceneLayerGuard;
 	json current;
 	feature->SaveSettings(current);
-	if (!DiffFromBase(current, saved).empty())
-		settingsChanged = true;
+	if (DiffFromBase(current, saved).empty())
+		changedFeatures.erase(name);
+	else
+		changedFeatures.insert(name);
 }
 
 void State::CheckCoreSettingsChanged()
@@ -915,9 +930,10 @@ void State::Save()
 
 	// Serialize fully before touching the file: a throwing feature must not truncate the config.
 	json settings;
+	std::unordered_map<std::string, json> savedEdits;
 	try {
 		SaveToJson(settings);
-		KeepOnlyUserEdits(settings);
+		savedEdits = KeepOnlyUserEdits(settings);
 		// The catalog writes its own section whenever it changes; this keeps it from being dropped here.
 		const auto& catalog = UnifiedPresetCatalog::GetSingleton();
 		settings[UnifiedPresetCatalog::kUserSettingsKey] = catalog.SerializeActiveState();
@@ -928,6 +944,7 @@ void State::Save()
 
 	if (Util::FileHelpers::WriteJsonAtomically(configPath, settings, 1, "config")) {
 		logger::info("Saving settings to {}", configPath);
+		userFeatureEdits = std::move(savedEdits);
 		MarkSettingsSaved();
 	}
 }
@@ -963,8 +980,9 @@ json State::DiffFromFeatureBase(const std::string& featureName, const json& curr
 	return DiffFromBase(current, base ? *base : empty);
 }
 
-void State::KeepOnlyUserEdits(json& settings)
+std::unordered_map<std::string, json> State::KeepOnlyUserEdits(json& settings) const
 {
+	auto edits = userFeatureEdits;
 	for (auto* feature : Feature::GetFeatureList()) {
 		if (!feature->UsesMainSettings())
 			continue;
@@ -972,14 +990,15 @@ void State::KeepOnlyUserEdits(json& settings)
 		// A feature that never loaded holds defaults, not the user's values, so its stored edits carry over.
 		if (feature->loaded) {
 			const auto current = settings.find(name);
-			userFeatureEdits[name] = current == settings.end() ? json::object() : DiffFromFeatureBase(name, *current);
+			edits[name] = current == settings.end() ? json::object() : DiffFromFeatureBase(name, *current);
 		}
-		const auto edits = userFeatureEdits.find(name);
-		if (edits == userFeatureEdits.end() || edits->second.empty())
+		const auto found = edits.find(name);
+		if (found == edits.end() || found->second.empty())
 			settings.erase(name);
 		else
-			settings[name] = edits->second;
+			settings[name] = found->second;
 	}
+	return edits;
 }
 
 void State::ReapplySettingsLayers()
@@ -1037,9 +1056,10 @@ void State::DropEditsUnder(Feature* feature, const json& packData)
 void State::ClearEditsUnderPack(const std::string& packId)
 {
 	SceneSettingsManager::SceneLayerGuard sceneLayerGuard;
-	for (auto* feature : FindEditsUnderPack(packId))
+	for (auto* feature : FindEditsUnderPack(packId)) {
 		DropEditsUnder(feature, GetPackFeatureData(packId, feature->GetShortName()));
-	MarkSettingsChanged();
+		CheckFeatureSettingsChanged(feature);
+	}
 	InvalidateEditsUnderBaselines();
 }
 
@@ -1127,27 +1147,25 @@ void State::ClearFeatureEditsUnderBaselines(Feature* feature)
 		SceneSettingsManager::SceneLayerGuard sceneLayerGuard;
 		DropEditsUnder(feature, GetPackFeatureData({}, feature->GetShortName()));
 	}
-	MarkSettingsChanged();
-	InvalidateEditsUnderBaselines(feature);
+	CheckFeatureSettingsChanged(feature);
 }
 
 void State::RestoreFeatureLayers(Feature* feature)
 {
-	MarkSettingsChanged();
-	InvalidateEditsUnderBaselines(feature);
 	SceneSettingsManager::SceneLayerGuard sceneLayerGuard;
 	// Defaults first, so settings a partial base leaves out still reset.
 	feature->RestoreDefaultSettings();
 	const auto base = featureBases.find(feature->GetName());
-	if (base == featureBases.end() || base->second.empty())
-		return;
-	json values = base->second;
-	try {
-		feature->LoadSettings(values);
-	} catch (const std::exception& e) {
-		logger::warn("Could not restore {} to its Baseline values, using defaults: {}", feature->GetName(), e.what());
-		feature->RestoreDefaultSettings();
+	if (base != featureBases.end() && !base->second.empty()) {
+		json values = base->second;
+		try {
+			feature->LoadSettings(values);
+		} catch (const std::exception& e) {
+			logger::warn("Could not restore {} to its Baseline values, using defaults: {}", feature->GetName(), e.what());
+			feature->RestoreDefaultSettings();
+		}
 	}
+	CheckFeatureSettingsChanged(feature);
 }
 
 bool State::ValidateCache(CSimpleIniA& a_ini)
@@ -1378,11 +1396,11 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::BaseObjectIsSnow);
 
 				{
-					uint32_t technique = 0x3F & (a_pixelDescriptor >> 24);
-					if (technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODLand &&
-						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODLandNoise &&
-						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjects &&
-						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjectHD)
+					const auto technique = SIE::ShaderCache::GetLightingTechnique(a_pixelDescriptor);
+					if (technique != SIE::ShaderCache::LightingShaderTechniques::LODLand &&
+						technique != SIE::ShaderCache::LightingShaderTechniques::LODLandNoise &&
+						technique != SIE::ShaderCache::LightingShaderTechniques::LODObjects &&
+						technique != SIE::ShaderCache::LightingShaderTechniques::LODObjectHD)
 						a_pixelDescriptor &= ~((uint32_t)SIE::ShaderCache::LightingShaderFlags::Specular |
 											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::SoftLighting |
 											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::RimLighting |
@@ -1400,21 +1418,21 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 					a_pixelDescriptor |= (uint32_t)SIE::ShaderCache::LightingShaderFlags::Deferred;
 
 				{
-					uint32_t technique = 0x3F & (a_vertexDescriptor >> 24);
-					if (technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Glowmap ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Parallax ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Facegen ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::FacegenRGBTint ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjects ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjectHD ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::MultiIndexSparkle ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Hair)
+					const auto technique = SIE::ShaderCache::GetLightingTechnique(a_vertexDescriptor);
+					if (technique == SIE::ShaderCache::LightingShaderTechniques::Glowmap ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::Parallax ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::Facegen ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::FacegenRGBTint ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::LODObjects ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::LODObjectHD ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::MultiIndexSparkle ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::Hair)
 						a_vertexDescriptor &= ~(0x3F << 24);
 				}
 
 				{
-					uint32_t technique = 0x3F & (a_pixelDescriptor >> 24);
-					if (technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Glowmap)
+					const auto technique = SIE::ShaderCache::GetLightingTechnique(a_pixelDescriptor);
+					if (technique == SIE::ShaderCache::LightingShaderTechniques::Glowmap)
 						a_pixelDescriptor &= ~(0x3F << 24);
 				}
 			}

@@ -6,8 +6,6 @@
 #include "SceneSettingsLocationTargets.h"
 
 #include <algorithm>
-#include <array>
-#include <functional>
 #include <map>
 #include <ranges>
 #include <set>
@@ -41,6 +39,19 @@ namespace
 			return name;
 		return std::format("{} / {}", name, GetCopyPeriodName(period));
 	}
+
+	/** @brief Compatible candidates, total and per feature. */
+	template <class Candidates>
+	std::pair<size_t, std::map<std::string, size_t>> CountCompatible(const Candidates& candidates)
+	{
+		std::pair<size_t, std::map<std::string, size_t>> counts;
+		for (const auto& candidate : candidates)
+			if (candidate.compatible) {
+				++counts.first;
+				++counts.second[candidate.setting.featureShortName];
+			}
+		return counts;
+	}
 }
 
 std::vector<SceneSettingsManager::CopyCandidate> SceneSettingsManager::BuildCopyCandidates(
@@ -62,16 +73,28 @@ std::vector<SceneSettingsManager::CopyCandidate> SceneSettingsManager::BuildCopy
 	if (!destinationEntries)
 		destinationEntries = &empty;
 
-	const auto effectiveEntries = BuildEffectiveContextEntries(*sourceEntries, source);
+	const auto effectiveEntries = BuildEffectiveContextEntries(*sourceEntries, source, true);
 	// Mod overwrites do not block a copy: a user entry outranks them, as when the box is ticked by hand.
 	std::map<SettingIdentity, json> destinationUserSettings;
-	for (const auto& entry : *destinationEntries)
-		if (EntryBelongsToContext(entry, destination) && entry.source == EntrySource::User && !entry.deleted)
-			destinationUserSettings.try_emplace(
-				SettingIdentity{ entry.featureShortName, entry.settingPath, entry.settingKey }, entry.value);
+	std::set<SettingIdentity> destinationOverwrites;
+	std::set<SettingIdentity> destinationTombstones;
+	for (const auto& entry : *destinationEntries) {
+		if (!EntryBelongsToContext(entry, destination))
+			continue;
+		SettingIdentity identity{ entry.featureShortName, entry.settingPath, entry.settingKey };
+		if (entry.source == EntrySource::Overwrite)
+			destinationOverwrites.insert(std::move(identity));
+		else if (entry.deleted)
+			destinationTombstones.insert(std::move(identity));
+		else
+			destinationUserSettings.try_emplace(std::move(identity), entry.value);
+	}
 
 	const auto destinationRules = GetSceneContextRules(destination);
 	for (const auto& [identity, entry] : effectiveEntries) {
+		// A tombstone only lands where a mod value is left to suppress.
+		if (entry->deleted && (!destinationOverwrites.contains(identity) || destinationTombstones.contains(identity)))
+			continue;
 		auto* setting = FindAllowedCatalogSetting(
 			identity.featureShortName, identity.settingPath, identity.settingKey, destinationRules.requireNumeric);
 		auto rejection = CopyRejection::None;
@@ -99,6 +122,7 @@ std::vector<SceneSettingsManager::CopyCandidate> SceneSettingsManager::BuildCopy
 			.rejection = rejection,
 			.compatible = compatible,
 			.conflicts = compatible && conflicts,
+			.deleted = entry->deleted,
 		});
 	}
 
@@ -137,74 +161,27 @@ std::vector<SceneSettingsManager::CopySource> SceneSettingsManager::GetCopySourc
 	if (destination.type == SceneContextType::Location &&
 		ResolveLocationTargetChain(destination.locationType, destination.locationFormKey).empty())
 		return {};
-	const auto destinationRules = GetSceneContextRules(destination);
-	// A group key leads with its feature, so whole groups count under one feature.
-	const auto countCompatible = [&](const EffectiveContextEntries& effectiveEntries) {
-		struct GroupCount
-		{
-			size_t members = 0;
-			size_t compatible = 0;
-		};
-		std::map<CopyGroupKey, GroupCount> groups;
-		for (const auto& [identity, entry] : effectiveEntries) {
-			auto& group = groups[GetCopyGroupKey(identity)];
-			++group.members;
-			auto* metadata = FindAllowedCatalogSetting(
-				identity.featureShortName, identity.settingPath, identity.settingKey, destinationRules.requireNumeric);
-			if (metadata &&
-				IsSettingAllowedForType(destinationRules.sceneType, identity.featureShortName,
-					identity.settingPath, identity.settingKey) &&
-				IsSceneSettingValueAllowed(entry->value, *metadata, entry->value, destinationRules.requireNumeric))
-				++group.compatible;
-		}
-		std::map<std::string, size_t> featureCounts;
-		for (const auto& [groupKey, group] : groups)
-			if (group.members == group.compatible)
-				featureCounts[std::get<0>(groupKey)] += group.members;
-		return featureCounts;
-	};
 
 	std::vector<CopySource> sources;
-	const auto addSource = [&](const SceneContextId& context, const EffectiveContextEntries& effectiveEntries) {
-		if (IsSameSceneContext(context, destination))
-			return;
-		auto featureCounts = countCompatible(effectiveEntries);
-		if (featureCounts.empty())
-			return;
-		const auto settingCount = std::ranges::fold_left(featureCounts | std::views::values, size_t{ 0 }, std::plus{});
-		sources.push_back({ context, GetSceneContextDisplayName(context), settingCount, true,
-			IsCurrentSceneContext(context), std::move(featureCounts) });
+	// Count via the real copy path so a listed source always copies.
+	const auto addSource = [&](const SceneContextId& context) {
+		auto [settingCount, featureCounts] = CountCompatible(BuildCopyCandidates(context, destination));
+		if (settingCount != 0)
+			sources.push_back({ context, GetSceneContextDisplayName(context), settingCount, true,
+				IsCurrentSceneContext(context), std::move(featureCounts) });
 	};
-	// The last slot holds the flat set, whose entries carry the Count period.
-	const auto addActiveSetSources = [&](const SceneContextId& context, const std::vector<SettingEntry>& sourceEntries,
-										 bool timeOfDayEnabled) {
-		std::array<EffectiveContextEntries, kPeriodCount + 1> periods;
-		for (auto entrySource : { EntrySource::Overwrite, EntrySource::User })
-			for (const auto& entry : sourceEntries) {
-				const auto periodIndex = static_cast<int>(entry.period);
-				if (entry.source == entrySource && !entry.paused && periodIndex >= 0 && periodIndex <= kPeriodCount)
-					periods[periodIndex][{ entry.featureShortName, entry.settingPath, entry.settingKey }] = &entry;
-			}
-		// Only after precedence, so a user tombstone hides the overwrite it shadows rather than exposing it.
-		for (auto& period : periods)
-			std::erase_if(period, [](const auto& item) { return item.second->deleted; });
-		ForEachActiveSetContext(context, timeOfDayEnabled, [&](const SceneContextId& setContext) {
-			addSource(setContext, periods[static_cast<int>(setContext.period)]);
-		});
+	const auto addActiveSetSources = [&](const SceneContextId& context, bool timeOfDayEnabled) {
+		ForEachActiveSetContext(context, timeOfDayEnabled, addSource);
 	};
 
-	const SceneContextId interiorContext{ .type = SceneContextType::Interior, .period = TimeOfDayPeriod::Count };
-	addSource(interiorContext,
-		BuildEffectiveContextEntries(GetEntries(SceneType::InteriorOnly), interiorContext));
-
-	addActiveSetSources({ .type = SceneContextType::TimeOfDay }, GetEntries(SceneType::TimeOfDay), true);
+	addSource({ .type = SceneContextType::Interior, .period = TimeOfDayPeriod::Count });
+	addActiveSetSources({ .type = SceneContextType::TimeOfDay }, true);
 	for (const auto& [weatherId, config] : weatherSceneConfigs)
-		addActiveSetSources({ .type = SceneContextType::Weather, .weatherId = weatherId }, config.entries,
-			config.timeOfDayEnabled);
+		addActiveSetSources({ .type = SceneContextType::Weather, .weatherId = weatherId }, config.timeOfDayEnabled);
 	for (const auto& [configKey, config] : locationSceneConfigs)
 		addActiveSetSources(
 			{ .type = SceneContextType::Location, .locationType = config.type, .locationFormKey = config.formKey },
-			config.entries, config.timeOfDayEnabled);
+			config.timeOfDayEnabled);
 	std::sort(sources.begin(), sources.end(), [](const auto& lhs, const auto& rhs) {
 		return std::tie(lhs.context.type, lhs.displayName, lhs.context) <
 		       std::tie(rhs.context.type, rhs.displayName, rhs.context);
@@ -222,15 +199,7 @@ std::vector<SceneSettingsManager::CopySource> SceneSettingsManager::GetCopyDesti
 	// Every candidate is validated through BuildCopyCandidates, the same path a real copy takes, so a
 	// destination is only offered when it would actually accept something.
 	const auto addDestination = [&](const SceneContextId& context, std::string displayName) {
-		if (IsSameSceneContext(context, source))
-			return;
-		std::map<std::string, size_t> featureCounts;
-		size_t compatibleCount = 0;
-		for (const auto& candidate : BuildCopyCandidates(source, context))
-			if (candidate.compatible) {
-				++featureCounts[candidate.setting.featureShortName];
-				++compatibleCount;
-			}
+		auto [compatibleCount, featureCounts] = CountCompatible(BuildCopyCandidates(source, context));
 		if (compatibleCount != 0)
 			destinations.push_back({ context, std::move(displayName), compatibleCount,
 				IsSceneContextAuthored(context), IsCurrentSceneContext(context), std::move(featureCounts) });
@@ -524,10 +493,12 @@ SceneSettingsManager::CopyResult SceneSettingsManager::CopySettingsToContext(con
 	for (auto& copy : pending) {
 		if (copy.destinationIndex) {
 			auto& destinationEntry = (*destinationEntries)[*copy.destinationIndex];
-			// Any user action on an address, including a copy landing on it, must clear a tombstone rather than leave it suppressing.
+			// The copy carries the source's state: a value clears a tombstone, a tombstone replaces a value.
 			const bool wasDeleted = destinationEntry.deleted;
 			destinationEntry.value = copy.candidate->value;
-			destinationEntry.deleted = false;
+			destinationEntry.deleted = copy.candidate->deleted;
+			// A paused tombstone suppresses nothing.
+			destinationEntry.paused &= !copy.candidate->deleted;
 			if (destination.type == SceneContextType::Location) {
 				destinationEntry.transitionSeconds = copy.transitionSeconds;
 				destinationEntry.retainSerializedTransition = false;
@@ -543,6 +514,7 @@ SceneSettingsManager::CopyResult SceneSettingsManager::CopySettingsToContext(con
 			.value = copy.candidate->value,
 			.originalValue = std::move(copy.originalValue),
 			.paused = false,
+			.deleted = copy.candidate->deleted,
 			.source = EntrySource::User,
 			.period = destination.period,
 			.transitionSeconds = copy.transitionSeconds,
